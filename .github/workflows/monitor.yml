@@ -1,26 +1,17 @@
-name: Twitter Multi-Monitor
+name: Twitter Monitor Test
 
 on:
   schedule:
-    - cron: '*/10 * * * *'     # 每10分钟检查一次
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
-  check-twitter:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install requests
-
-      - name: Run Twitter Monitor
+      - name: Test DingTalk
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
         run: |
@@ -30,80 +21,25 @@ import requests
 import json
 from datetime import datetime
 
-ding_webhook = os.environ.get("DING_WEBHOOK")
-if not ding_webhook:
-    print("Error: DING_WEBHOOK secret not set")
+webhook = os.environ.get("DING_WEBHOOK")
+if not webhook:
+    print("❌ DING_WEBHOOK 未设置")
     exit(1)
 
-# 读取要监控的用户
-with open("users.txt", "r", encoding="utf-8") as f:
-    users = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+print("✅ Webhook 已读取")
 
-# 读取已发送历史（防止重复）
-history_file = "sent_history.txt"
-sent_ids = set()
-if os.path.exists(history_file):
-    with open(history_file, "r", encoding="utf-8") as f:
-        sent_ids = set(line.strip() for line in f if line.strip())
+test_msg = f"【测试推送】\n时间: {datetime.now()}\nGitHub Actions 正常运行"
 
-new_sent = list(sent_ids)
-count = 0
+data = {
+    "msgtype": "text",
+    "text": {"content": test_msg}
+}
 
-for username in users:
-    # 使用多个RSSHub节点轮询，提高成功率
-    nodes = [
-        f"https://rsshub.app/twitter/user/{username}",
-        f"https://rssfeed.today/twitter/user/{username}",
-        f"https://twitter.sinoapp.net/user/{username}"
-    ]
-    
-    for base_url in nodes:
-        try:
-            rss_url = f"{base_url}/with_replies" if "rsshub.app" in base_url else base_url
-            r = requests.get(rss_url, timeout=15)
-            if r.status_code != 200:
-                continue
-                
-            # 简单解析（RSSHub返回JSON或XML）
-            data = r.json() if r.headers.get("content-type", "").find("json") > -1 else None
-            if not data:
-                continue
-                
-            items = data.get("items", [])[:5]
-            for item in items:
-                item_id = item.get("id") or item.get("guid") or str(hash(item.get("title","")))
-                if item_id in sent_ids:
-                    continue
-                    
-                title = item.get("title", "新动态")
-                link = item.get("link", "")
-                content = f"【DT推特监控】\n@{username}\n{title}\n\n🔗 {link}"
-                
-                # 发送钉钉
-                payload = {
-                    "msgtype": "text",
-                    "text": {"content": content}
-                }
-                resp = requests.post(ding_webhook, json=payload, timeout=10)
-                
-                if resp.status_code == 200:
-                    print(f"已推送: @{username}")
-                    new_sent.append(item_id)
-                    count += 1
-                break  # 推送成功就跳出节点循环
-        except:
-            continue
-
-# 更新历史记录
-with open(history_file, "w", encoding="utf-8") as f:
-    f.write("\n".join(new_sent[-800:]))
-
-print(f"本次检查完成，新增推送 {count} 条")
+r = requests.post(webhook, json=data)
+print("状态码:", r.status_code)
+print("返回:", r.text)
+if r.status_code == 200:
+    print("✅ 钉钉测试推送成功！")
+else:
+    print("❌ 推送失败")
           '
-
-      - name: Update history
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add sent_history.txt
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update sent history" && git push
