@@ -2,8 +2,8 @@ name: Twitter Multi-Monitor
 
 on:
   schedule:
-    # 每隔 15 分钟自动运行一次
-    - cron: '*/15 * * * *'
+    # 改为每 1 分钟自动运行一次
+    - cron: '*/1 * * * *'
   workflow_dispatch:
 
 jobs:
