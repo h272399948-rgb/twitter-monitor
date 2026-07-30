@@ -54,10 +54,9 @@ jobs:
           new_sent_ids = list(sent_ids)
           has_new_msg = False
 
-          # 依次遍历每个用户
+          # 依次遍历每个用户（使用稳定的公共 RSSHub 节点）
           for username in users:
-              # 使用 RSSHub 抓取该用户的推文和回复
-              rss_url = f"https://rsshub.app/twitter/user/{username}/with_replies"
+              rss_url = f"https://rsshub.rssforever.com/twitter/user/{username}/with_replies"
               feed = feedparser.parse(rss_url)
 
               # 倒序检查最近几条动态
