@@ -2,8 +2,7 @@ name: Twitter Multi-Monitor
 
 on:
   schedule:
-    # 改为每 1 分钟自动运行一次
-    - cron: '*/1 * * * *'
+    - cron: '*/10 * * * *'     # 每10分钟检查一次
   workflow_dispatch:
 
 jobs:
@@ -11,87 +10,100 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install feedparser requests
+        run: pip install requests
 
-      - name: Run monitoring script
+      - name: Run Twitter Monitor
         env:
           DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
         run: |
           python -c '
-          import os
-          import feedparser
-          import requests
-          import json
+import os
+import requests
+import json
+from datetime import datetime
 
-          ding_webhook = os.environ.get("DING_WEBHOOK")
-          if not ding_webhook:
-              print("Error: DING_WEBHOOK not set")
-              exit(1)
+ding_webhook = os.environ.get("DING_WEBHOOK")
+if not ding_webhook:
+    print("Error: DING_WEBHOOK secret not set")
+    exit(1)
 
-          # 读取监控用户名单
-          if not os.path.exists("users.txt"):
-              print("Error: users.txt not found")
-              exit(1)
-              
-          with open("users.txt", "r") as f:
-              users = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+# 读取要监控的用户
+with open("users.txt", "r", encoding="utf-8") as f:
+    users = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
-          # 读取历史已发送过的信息记录（防重复）
-          history_file = "sent_history.txt"
-          sent_ids = set()
-          if os.path.exists(history_file):
-              with open(history_file, "r") as f:
-                  sent_ids = set(f.read().splitlines())
+# 读取已发送历史（防止重复）
+history_file = "sent_history.txt"
+sent_ids = set()
+if os.path.exists(history_file):
+    with open(history_file, "r", encoding="utf-8") as f:
+        sent_ids = set(line.strip() for line in f if line.strip())
 
-          new_sent_ids = list(sent_ids)
-          has_new_msg = False
+new_sent = list(sent_ids)
+count = 0
 
-          # 依次遍历每个用户（使用稳定的公共 RSSHub 节点）
-          for username in users:
-              rss_url = f"https://rsshub.rssforever.com/twitter/user/{username}/with_replies"
-              feed = feedparser.parse(rss_url)
+for username in users:
+    # 使用多个RSSHub节点轮询，提高成功率
+    nodes = [
+        f"https://rsshub.app/twitter/user/{username}",
+        f"https://rssfeed.today/twitter/user/{username}",
+        f"https://twitter.sinoapp.net/user/{username}"
+    ]
+    
+    for base_url in nodes:
+        try:
+            rss_url = f"{base_url}/with_replies" if "rsshub.app" in base_url else base_url
+            r = requests.get(rss_url, timeout=15)
+            if r.status_code != 200:
+                continue
+                
+            # 简单解析（RSSHub返回JSON或XML）
+            data = r.json() if r.headers.get("content-type", "").find("json") > -1 else None
+            if not data:
+                continue
+                
+            items = data.get("items", [])[:5]
+            for item in items:
+                item_id = item.get("id") or item.get("guid") or str(hash(item.get("title","")))
+                if item_id in sent_ids:
+                    continue
+                    
+                title = item.get("title", "新动态")
+                link = item.get("link", "")
+                content = f"【DT推特监控】\n@{username}\n{title}\n\n🔗 {link}"
+                
+                # 发送钉钉
+                payload = {
+                    "msgtype": "text",
+                    "text": {"content": content}
+                }
+                resp = requests.post(ding_webhook, json=payload, timeout=10)
+                
+                if resp.status_code == 200:
+                    print(f"已推送: @{username}")
+                    new_sent.append(item_id)
+                    count += 1
+                break  # 推送成功就跳出节点循环
+        except:
+            continue
 
-              # 倒序检查最近几条动态
-              for entry in reversed(feed.entries[:3]):
-                  entry_id = entry.get("id") or entry.get("link")
-                  if entry_id in sent_ids:
-                      continue
-                  
-                  title = entry.get("title", "新推文/回复")
-                  link = entry.get("link", "")
-                  
-                  # 必须带上安全关键词 DT，否则钉钉会拦截
-                  content = f"【DT 推特监控】\n账号: @{username}\n内容: {title}\n链接: {link}"
+# 更新历史记录
+with open(history_file, "w", encoding="utf-8") as f:
+    f.write("\n".join(new_sent[-800:]))
 
-                  # 发送到钉钉
-                  headers = {"Content-Type": "application/json"}
-                  data = {"msgtype": "text", "text": {"content": content}}
-                  response = requests.post(ding_webhook, data=json.dumps(data), headers=headers)
-                  
-                  if response.status_code == 200:
-                      print(f"Successfully sent for @{username}")
-                  else:
-                      print(f"Failed to send for @{username}: {response.text}")
-
-                  new_sent_ids.append(entry_id)
-                  has_new_msg = True
-
-          # 保存历史记录（最多保留最近500条）
-          with open(history_file, "w") as f:
-              f.write("\n".join(new_sent_ids[-500:]))
+print(f"本次检查完成，新增推送 {count} 条")
           '
 
-      - name: Commit and push if changed
+      - name: Update history
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add sent_history.txt
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update sent history" && git push)
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update sent history" && git push
